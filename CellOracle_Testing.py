@@ -211,6 +211,124 @@ sc.pl.draw_graph(
 # Ideally, with time we can simply reprocess everything but up until this point, we are looking good. 
 
 
+"""
+# Renormalise the data and replot everything.
+
+Given that i've subsetted the data, I should  renormalise and plot. For this, i'll run through the CellOracle scRNAseq preprocessing with scanpy (https://morris-lab.github.io/CellOracle.documentation/notebooks/03_scRNA-seq_data_preprocessing/scanpy_preprocessing_with_Paul_etal_2015_data.html#7.-Cell-clustering).
+I have slightly adjusted this but it's nothing major and the outputs/results are mostly the same.    
+
+NOTE: from the paper:
+To generate the force-directed layouts of the haemato-endothelial landscapes, 
+we recomputed HVGs for each subset as well as batch correction of PCA manifolds (we again retained the top 50 principal components). 
+We then built a KNN graph (K=50) and used ForceAtlas2 (Jacomy et al., 2014) implementation of force-directed layouts included in scanpy.
+Its important to note that they batch correct. I'm thinking that if i run BBKNN it might resolve some of the weird plotting issues i've been having. 
+"""
+
+# Run Preprocessing and work from there.
+# Log Normalisation
+# Set soupX as X and then normalise that
+reference_trajectory.X = reference_trajectory.layers["raw_counts"] # You should've done this earlier but this is a check
+# control
+scales_counts = sc.pp.normalize_total(reference_trajectory, target_sum=1e4, inplace=False) # 10000 counts 
+# log1p transform
+reference_trajectory.layers["log1p_norm"] = sc.pp.log1p(scales_counts["X"], copy=True)
+
+# Highly variable gene selection: Had been done in the original dataset but for this, i'm going to ignore that and rerun.
+# Here, we dont yet subset data to avoid loss of genes. I'll subset in a bit.
+reference_trajectory.X = reference_trajectory.layers["log1p_norm"]
+
+sc.pp.highly_variable_genes(reference_trajectory, n_top_genes=2000, inplace=True) # might remove the in-place bit
+sc.pl.highly_variable_genes(reference_trajectory) # plot the HVG
+# We could subset the data for the HVGs.
+
+# Run PCA - set use_highly_variable to select only for HVG
+# If we have some genes of interest, we can add them back in.
+reference_HVG = reference_trajectory[:, reference_trajectory.var.highly_variable]
+sc.pp.pca(reference_HVG, svd_solver="arpack") # Shouldnt need to run this again becuase we already have the X_pca?
+# sc.pl.pca_variance_ratio(reference_HVG, log=True, n_pcs = 50)
+reference_HVG
+
+# The requirement is that the dimred model recapitulates the trajectory. My UMAP is fine but the actual one, based on the tutorial is not great.
+# Need to fix but when reclustering, the cell types are all over the place. 
+sc.pl.draw_graph(reference_HVG, color='celltype_extended_atlas')
+# https://discourse.scverse.org/t/re-clustering-clusters-of-anndata/889/2
+# Lets just check the object and examine  gene expression
+markers = {"NMPs":["Sox2","T"],
+           "NMPs/Mesoderm-biased":["Epha5"],
+            "Somitic mesoderm":["Tbx6"],
+            "Spinal cord progenitors":["Pax6"]
+            }
+
+for cell_type, genes in markers.items():
+    print(f"marker gene of {cell_type}")
+    sc.pl.draw_graph(reference_HVG, color=genes, use_raw=False, ncols=2)
+    plt.show()
 
 
+# Pseudotime calculation for CellOracle. 
+# Decided to avoid renormalisation and just run with the subsetted object. Changes can be made in future.
+import copy
+import glob
+import time
+import os
+import shutil
+import sys
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import seaborn as sns
+from tqdm.auto import tqdm
+
+#import time
+import celloracle as co
+from celloracle.applications import Pseudotime_calculator
+co.__version__
+
+# Instantiate pseudotime object using anndata object.
+pt = Pseudotime_calculator(adata=reference_HVG,
+                           obsm_key="X_draw_graph_fa", # Dimensional reduction data name
+                           cluster_column_name="celltype_extended_atlas" # Clustering data name
+                           )
+
+# Check data
+pt.plot_cluster(fontsize=10) # Tricky as the dots are super big.
+
+# Define lineages 
+mesoderm_lineage = ['Caudal mesoderm','NMPs','NMPs/Mesoderm-biased','Somitic mesoderm','Presomitic mesoderm',
+                    'Posterior somitic tissues','Sclerotome','Lateral plate mesoderm'] 
+neural_lineage = ['NMPs','Spinal cord progenitors','Dorsal spinal cord progenitors']
+
+# Make a dictionary
+lineage_dictionary = {"Lineage_meso": mesoderm_lineage,
+           "Lineage_neural": neural_lineage}
+
+# Input lineage information into pseudotime object
+pt.set_lineage(lineage_dictionary=lineage_dictionary)
+
+# Visualize lineage information
+pt.plot_lineages()
+
+# Define the root cell: i.e What is the starting cell.
+# Hope is that we can select a "middle NMP" which is neither neural or mesodermal. This should have roughly equal T/Sox2.
+# How fair is this? The NMC domain is extremely complex, heterogeneity is an important consideration
+# Show interactive plot using plotly. Please make sure that plotly is installed.
+try:
+    import plotly.express as px
+    def plot(adata, embedding_key, cluster_column_name):
+        embedding = adata.obsm[embedding_key]
+        df = pd.DataFrame(embedding, columns=["x", "y"])
+        df["cluster"] = adata.obs[cluster_column_name].values
+        df["label"] = adata.obs.index.values
+        fig = px.scatter(df, x="x", y="y", hover_name=df["label"], color="cluster")
+        fig.show()
+
+    plot(adata=pt.adata,
+         embedding_key=pt.obsm_key,
+         cluster_column_name=pt.cluster_column_name)
+except:
+    print("Plotly not found in your environment. Did you install plotly? Please read the instruction above.")
+
+
+# 388740 looks decent
