@@ -329,6 +329,76 @@ try:
          cluster_column_name=pt.cluster_column_name)
 except:
     print("Plotly not found in your environment. Did you install plotly? Please read the instruction above.")
+# Cell 388740 looks decent
+
+# Estimated root cell name for each lineage 375872
+# Given that NMPs are the route of both, im making the route the same for both
+root_cells = {"Lineage_meso": "375872", "Lineage_neural": "375872"}
+pt.set_root_cells(root_cells=root_cells)
+
+# Check root cell and lineage
+pt.plot_root_cells()
+
+# calculate diffusion map information for the data using the neighbours that have already been calculated.
+# Might need to run an additional filter to ensure certain gene are expressed
+# https://github.com/theislab/single-cell-tutorial/issues/79
+sc.tl.diffmap(reference_HVG)
+# Calculate pseudotime
+pt.get_pseudotime_per_each_lineage()
+# Check results
+pt.plot_pseudotime(cmap="rainbow")
+# Check result
+pt.adata.obs[["Pseudotime"]].head()
+reference_HVG.obs['Pseudotime'] = pt.adata.obs[["Pseudotime"]]
+# Save the object with the pseudotime information for future reference.
+# reference_HVG.write("/data/kellyrc/scRNAseq_Sp8/scanpy_Sp8/reference_HVG.h5ad") Last saved 2025_02_26
+
+# Load the relevant GRN
+base_GRN = co.data.load_mouse_scATAC_atlas_base_GRN()
+base_GRN.head() # produces details about the GRN - Can make our own but the base will be fine for testing.
+
+adata = sc.read_h5ad("/data/testing/scRNAseq_Sp8/scanpy_Sp8/reference_HVG.h5ad")
+adata.X = adata.layers["raw_counts"].copy()
+adata
+# Set ip the oracle object
+oracle = co.Oracle()
+
+# Add data and create the object
+oracle.import_anndata_as_raw_count(adata = adata, cluster_column_name= "celltype_extended_atlas", embedding_name="X_draw_graph_fa")
+
+# Import the GRN
+oracle.import_TF_data(TF_info_matrix=base_GRN)
+
+# Perform PCA
+oracle.perform_PCA()
+
+# Select important PCs
+plt.plot(np.cumsum(oracle.pca.explained_variance_ratio_)[:100])
+n_comps = np.where(np.diff(np.diff(np.cumsum(oracle.pca.explained_variance_ratio_))>0.002))[0][0]
+plt.axvline(n_comps, c="k")
+plt.show()
+print(n_comps)
+n_comps = min(n_comps, 50)
+
+n_cell = oracle.adata.shape[0]
+print(f"cell number is :{n_cell}")
+
+k = int(0.025*n_cell)
+print(f"Auto-selected k is :{k}")
+
+# Run Knn imputation before calculating GRNs for each cell type. 
+oracle.knn_imputation(n_pca_dims=n_comps, k=k, balanced=True, b_sight=k*8,
+                      b_maxl=k*4, n_jobs=4)
 
 
-# 388740 looks decent
+# Save the oracle object
+# Save oracle object.
+oracle.to_hdf5("Ross_adata.celloracle.oracle")
+
+links = oracle.get_links(cluster_name_for_GRN_unit="celltype_extended_atlas", alpha=10,
+                         verbose_level=10)
+
+
+
+
+
